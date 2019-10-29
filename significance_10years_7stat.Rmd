@@ -1,0 +1,173 @@
+---
+title: What are the chance for having a significant signal when comparing two 10-year
+  periods
+author: "Erwan Brisson (CNRM/CNRS)"
+date: "28/10/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+When working on very high-resolution simulations, it is not always possible to perform simulations of multiple decades. Ten years ago, in the framework of my PhD, I already had to deal with this limitation. Back then, I performed convection-permitting climate simulations over a small domain (i.e., Belgium). Due to the cost of such simulations (multiple days to runs single years on a large number of processors), we use statistical methods to assess the uncertainty inherent to the climate variability when comparing precipitation averages from two ten-year periods.      
+In the following, we use a very different and more straightforward method that although being less accurate (i.e., it does not include yearly autocorrelation), allows for a more direct analysis and is maybe easier for climate scientists to understand and apply.
+The following document mixes R code, description and discussions. The methodology is not reviewed, and constructive critics are welcomed. 
+
+## Method
+The method is based on resamplings of a 38-year period (i.e., 1981-2018) convection-permitting climate simulation for the present day based on ERA-Interim reanalysis. Two 10-year datasets are randomly build using blocks of one year. The Wilcoxson test is then applied for each grid point on all the time series or subset of this time series (e.g., all values greater than the median or the 75th, 90th, 95th, 99th, 99.9th quantiles). The Wilcoxson test is used as it does not assume the data to be normally distributed as opposed to, e.g., the t-test. The Wilcoxson test assumes data dependence which is the reason why we did not use hourly values. Still, we assume daily values to be independent, which is a strong assumption. The full process is repeated 100 times. The p-values derived from the Wilcoxson test are then processed to assess the robustness of a statistic (the higher the p-value, the more robust the statistic).
+
+
+## Load libraries, scripts and paths
+```{r Load libraries and scripts, message=F, warning=F}
+library(Rcpp)
+library(lubridate)
+library(tidyverse)
+library(ncdf4)
+library(RColorBrewer)
+library(mapdata)
+library(autoimage)
+library(plotly)
+
+#load Cpp script to increase the speed of computation. 
+sourceCpp("/home/brissone/Documents/basic_cpp/meanOnt.cpp") #Compute temporal mean over spatial domain 
+sourceCpp('/home/brissone/Documents/basic_cpp/meanOnx.cpp')
+
+dir.path.nc="/cnrm/mosca/USERS/brissone/AROME41/FPS25-1.00/NETCDF/pr/"
+dir.path="/home/brissone/Documents/significance_10years/"
+```
+
+```{r theme ofr ggplot, message=F, warning=F}
+#Setting for ggplot plots
+theme_set(theme_minimal(base_size=20))
+theme_update(axis.line = element_line(colour = "black",size=0.7),
+             axis.ticks = element_line(colour = "black",size=0.7))
+```
+
+## Load and preprocess data
+First we load in the climate simulations. We choose to use daily values to reduce the dependency of data to each other which is assumed later in this document.
+```{r Load precipitation data,eval=FALSE}
+nc=nc_open(paste0(dir.path.nc,"pr_ALP-3_ECMWF-ERAINT_evaluation_r1i1p1_CNRM-AROME41t1_v1n1_daysum_1981_2018.nc"))
+data=ncvar_get(nc,"pr")
+time=ymd_hms(ncatt_get(nc,"time")$units)+seconds(ncvar_get(nc,"time")*3600)
+lat=ncvar_get(nc,"lat")
+lon=ncvar_get(nc,"lon")
+nc_close(nc)
+```
+
+We initialize different variables and remove the 29th of February to ease the computation
+
+```{r Initialize variables, eval=FALSE}
+dim=dim(data)
+year.index=year(time)
+result.wilcox.test=array(dim=c(15,dim[1:2],7))
+
+#REMOVE 29TH OF FEB FOR EASING THE COMPUTATION
+year.index[month(time)==2 & day(time)==29]=-999
+seed=123
+```
+
+## Apply dependence test on randomn samples
+In the following loop, we take random 10-year samples and compute the Wilcoxon test, a non-parametric significance test, over different statistics (i.e., mean and 0.5, 0.75, 0.9, 0.95, 0.99 and 0.999 quantiles). Note that this calculation is computationally intensive and was, therefore, run with a similar code but in multiple chunks over a high-performance computer. If you want to reproduce the following calculation, note that I use four ten-random selections with the seeds 4584, 7438, 99471 and 94661 and four 15-random selections with the seeds 14760, 17991, 56900 and 29788.
+Here the Wilcoxon test was applied to either the full period or the period above a given threshold (e.g., 90th quantile). There exist other ways to derive the p.value but we felt that it was one of the most relevant. 
+```{r Derive output from Wilcoxon test for 100 randomn selection, eval=FALSE}
+#Sorry for thre dirty for loop but this was the most efficient and simple method I found
+for (rand in 1:15){
+  sample.full=sample(1981:2018,size=20)
+  index.period1=which(year.index %in% sample.full[1:10])
+  index.period2=which(year.index %in% sample.full[11:20])
+  data.period=list();temp.data.period=list();temp2.data.period=list()
+  data.period[[1]]=data[,,index.period1]
+  data.period[[2]]=data[,,index.period2]
+  quant.temp=array(dim=c(2,6))
+  for (j in 1:dim[2]){
+    temp.data.period[[1]]=data.period[[1]][,j,]
+    temp.data.period[[2]]=data.period[[2]][,j,]
+    for (i in 1:dim[1]){
+      temp2.data.period[[1]]=temp.data.period[[1]][i,]
+      temp2.data.period[[2]]=temp.data.period[[2]][i,]
+      result.wilcox.test[rand,i,j,1]=wilcox.test(temp2.data.period[[1]],temp2.data.period[[2]])$p.value  
+      quant.temp[1,]=quantile(temp2.data.period[[1]],probs = c(0.5,0.75,0.9,0.95,0.99,0.999))
+      quant.temp[2,]=quantile(temp2.data.period[[2]],probs = c(0.5,0.75,0.9,0.95,0.99,0.999))
+      for (pctl in 1:6){
+        result.wilcox.test[rand,i,j,pctl+1]=wilcox.test(temp2.data.period[[1]][temp2.data.period[[1]]>=quant.temp[1,pctl]],temp2.data.period[[2]][temp2.data.period[[2]]>=quant.temp[2,pctl]])$p.value
+      }
+    }
+  }
+  print(rand)
+}
+save(result.wilcox.test.recap, file = paste0(dir.path,"10years_sign_test_wilcox100_multipleSeed.RData"))
+```
+
+
+As the loop forward was not run in this document, the following line loads the output of the loop. 
+```{r Load results}
+load(file = paste0(dir.path,"10years_sign_test_wilcox100_multipleSeed.RData"))
+```
+## Postprocess and visualize results  
+We use three p-value thresholds (i.e., 0.1, 0.05 and 0.01) and set values which are below this threshold to 1 (while other values are set to 0).    
+```{r Postprocess data}
+result.wilcox.test.recap.bool=array(0,dim=c(3,587,487,100,7))
+singThres.val=c(0.1,0.05,0.01)
+for (signThres.i in 1:3){
+  for (rand.i in 1:100){
+    result.wilcox.test.recap.bool[signThres.i,,,rand.i,][(result.wilcox.test.recap[rand.i,,,]<singThres.val[signThres.i])]=1
+  }
+}
+```
+
+The mean on random selection is derived and converted to a percentage. The output shows the chance for a given point to have a p-value lower than the selected thresholds when comparing two ten-year periods. 
+```{r Postprocess data 2}
+result.wilcox.test.bool.randmean=array(dim=c(dim(result.wilcox.test.recap.bool[,,,1,])))
+for (thres in 1:3){
+  for (stat in 1:7){
+  result.wilcox.test.bool.randmean[thres,,,stat]=meanOnt(result.wilcox.test.recap.bool[thres,,,,stat],2)*100
+  }
+}
+summary(result.wilcox.test.bool.randmean)
+
+```
+If ten-year periods were long enough for comparing the derived statistics, we would expect all values to be equal or below the selected p-value thresholds (in the following map that would be in red). 
+```{r get lat and lon,echo=FALSE}
+nc=nc_open(paste0(dir.path.nc,"pr_ALP-3_ECMWF-ERAINT_evaluation_r1i1p1_CNRM-AROME41t1_v1n1_daysum_1981_2018.nc"))
+lat=ncvar_get(nc,"lat")
+lon=ncvar_get(nc,"lon")
+nc_close(nc)
+```
+
+```{r r Plot map median p.val0.05}
+pimage(lon,lat,result.wilcox.test.bool.randmean[2,,,2],col=c("#FF0000",brewer.pal(n = 9, name = "YlGnBu")),breaks=c(0,0.05,0.1,2:9/10)*100,xlab="Longitude",ylab="Latitude",main="Percentage of p.values<0.05 when comparing values \n above the median for two 10-year periods",legend = "vertical",lratio = 0.15,map = "world")
+sum(result.wilcox.test.bool.randmean[2,,,2]<=5)
+```
+As shown above, there are only a few points (266) with a percentage below or equal to 5%, indicating that the climate natural variability is too high to derive a robust median over a 10-year period. When comparing two 10-year period simulations, tests such as the Wilcoxon test are therefore not adapted for comparing medians. However, interesting spatial patterns stick out of this map. The influence of the sea tend to stabilize the climatology and signal over the seas, and coastal areas may be more robust than those over land. The orography seems to delimit the areas over land for which a more robust signal can be obtained. This work could serve as a basis to redefine a threshold for which the signal could not be attributed to the climate variability. However, the use of the most recent 38 years to define such threshold may not be adapted due to the non-stationarity of the timeseries and to a too short period - although the two latter tend to have a compensating effect (i.e., the non-stationarity increases the variability while the use of too short periods decreases it)    
+
+```{r Plot map q99.9 p.val0.05}
+pimage(lon,lat,result.wilcox.test.bool.randmean[2,,,7],col=c("#FF0000",brewer.pal(n = 9, name = "YlGnBu")),breaks=c(0,0.05,0.1,2:9/10)*100,xlab="Longitude",ylab="Latitude",main="Percentage of p.values<0.05 when comparing values \n above the 99.9th quantiles for two 10-year periods",legend = "vertical",lratio = 0.15,map = "world")
+```
+
+Mapping a similar map for the extremes, provide a different solution. Not only they are no clear patterns but also the percentages are much lower, indicating some more robustness compared to the median. This increase in robustness is mainly arising from the high variability of the samples. This high variability results in the need for large differences in the mean between two compared samples for obtaining low p-values.  
+
+```{r Plot map q99.9 p.val0.01}
+pimage(lon,lat,result.wilcox.test.bool.randmean[3,,,7]+0.000001,col=c("#FF0000",brewer.pal(n = 9, name = "YlGnBu")),breaks=c(0,0.05,0.1,2:9/10)*100,xlab="Longitude",ylab="Latitude",main="Percentage of p.values<0.01 when comparing values \n above the 99.9th quantiles for two 10-year periods",legend = "vertical",lratio = 0.15,map = "world")
+```
+P-values lower or equal to 0.01 for the 99th quantiles even shows a more robust pattern. In this case, in none of the compared samples, p.value were lower than 0.01 for precipitation above the 99.9th quantile.  
+
+```{r Postprocess data 3}
+stat.val=c("mean","median","q75","q90","q95","q99","q99.9")
+result.wilcox.test.randmean=tibble(.rows = dim(result.wilcox.test.recap)[2]*dim(result.wilcox.test.recap)[3])
+for (stat in 1:7){
+ result.wilcox.test.randmean[[stat.val[stat]]]=as.numeric(meanOnx(result.wilcox.test.recap[,,,stat],2))
+}
+```
+
+```{r plotdensity}
+p=ggplot(result.wilcox.test.randmean%>%gather(key="statistic", value="p.value"),aes(p.value,color=statistic)) +
+  geom_density(lwd=2)
+ggplotly(p)
+```
+The previous conclusions are also verified when looking at the distribution of random-sample-averaged p-values. The 99th quantiles show much higher values than the other statistics. The mean is the other more robust statistic and does not exhibit a bimodal distribution as the median. The occurrence is probably playing a role in this difference. Finally, the less robust statistic is the 75th quantiles. Higher quantiles become more robust with increasing value. 
+
+## Discussion
+For three p-values tested the Wilcoxon test shows low robustness of the seven statistics when working with 10-year periods. Only the 99.9th quantiles shows no p-values lower than 0.01 in this test. However, the response of the test is extremely sensitive to the variability of the sample. For deriving the variability of the daily values above the 99.9th quantiles over a 10-year period, only 36 values are used. 36 values are probably not enough to estimate the variability correctly, which may bias the result of the significance test. 
