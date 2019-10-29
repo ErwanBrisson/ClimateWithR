@@ -1,6 +1,11 @@
 ---
 title: What are the chance for having a significant signal when comparing two 10-year
   periods
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
 author: "Erwan Brisson (CNRM/CNRS)"
 date: "28/10/2019"
 output: html_document
